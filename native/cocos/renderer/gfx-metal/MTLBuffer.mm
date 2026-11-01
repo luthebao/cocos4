@@ -130,6 +130,7 @@ bool CCMTLBuffer::createMTLBuffer(uint32_t size, MemoryUsage usage) {
     id<MTLDevice> mtlDevice = id<MTLDevice>(CCMTLDevice::getInstance()->getMTLDevice());
     _gpuBuffer->mtlBuffer = [mtlDevice newBufferWithLength:allocatedSize options:_mtlResourceOptions];
     if (_gpuBuffer->mtlBuffer == nil) {
+        CC_LOG_ERROR("CCMTLBuffer: failed to create MTLBuffer of %u bytes.", allocatedSize);
         return false;
     }
     return true;
@@ -255,6 +256,16 @@ void CCMTLBuffer::update(const void *buffer, uint32_t size) {
 
 void CCMTLBuffer::updateMTLBuffer(const void *buffer, uint32_t /*offset*/, uint32_t size) {
     id<MTLBuffer> mtlBuffer = _gpuBuffer->mtlBuffer;
+    if (mtlBuffer == nil) {
+        // The MTLBuffer could not be allocated (newBufferWithLength returns nil, e.g. under memory pressure).
+        // A nil buffer reads as non-private storage with nil contents, so the memcpy below would write to address 0:
+        // allocate it again, and skip this update when that fails too.
+        createMTLBuffer(_size, _memUsage);
+        mtlBuffer = _gpuBuffer->mtlBuffer;
+        if (mtlBuffer == nil) {
+            return;
+        }
+    }
     auto* ccDevice = CCMTLDevice::getInstance();
     if(mtlBuffer.storageMode != MTLStorageModePrivate) {
         auto& lastUpdateCycle = _gpuBuffer->lastUpdateCycle;
