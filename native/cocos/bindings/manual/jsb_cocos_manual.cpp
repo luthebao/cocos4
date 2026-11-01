@@ -347,9 +347,10 @@ static bool register_sys_localStorage(se::Object *obj) { // NOLINT(readability-i
     localStorageInit(strFilePath);
 #endif
 
-    se::ScriptEngine::getInstance()->addBeforeCleanupHook([]() {
-        localStorageFree();
-    });
+    // The local storage stays open across __restartVM(): closing it in the cleanup hook made the new VM's localStorageInit reopen the file (on macOS at the
+    // default writable path, which the OS guards behind a permission). localStorageInit does nothing while it is open, so the new VM reads the same rows.
+    // __mcRestartVM tells the game that this engine restarts the VM in place (obj is the global object).
+    obj->setProperty("__mcRestartVM", se::Value(true));
 
     se::ScriptEngine::getInstance()->clearException();
 
