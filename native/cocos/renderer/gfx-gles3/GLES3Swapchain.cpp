@@ -45,6 +45,25 @@
 namespace cc {
 namespace gfx {
 
+namespace {
+/**
+ * The window surface. On Windows (ANGLE over Direct3D 11) it is made on ANGLE's DirectComposition path first
+ * (EGL_DIRECT_COMPOSITION_ANGLE = 0x33A5): a swap chain bound to the HWND itself is not shown by every PC (the window
+ * stayed black on machines whose desktop is a virtual display), while the DirectComposition one, as Chrome and VS Code
+ * present, draws. An EGL that refuses the attribute (another ANGLE build, an emulator) gets a plain surface.
+ */
+EGLSurface createWindowSurface(EGLDisplay display, EGLConfig config, EGLNativeWindowType window) {
+#if CC_PLATFORM == CC_PLATFORM_WINDOWS
+    const EGLint dcompAttribs[]{0x33A5, EGL_TRUE, EGL_NONE};
+    EGLSurface surface = eglCreateWindowSurface(display, config, window, dcompAttribs);
+    if (surface != EGL_NO_SURFACE) {
+        return surface;
+    }
+#endif
+    return eglCreateWindowSurface(display, config, window, nullptr);
+}
+} // namespace
+
 GLES3Swapchain::GLES3Swapchain() {
     _typedID = generateObjectID<decltype(this)>();
 }
@@ -114,7 +133,7 @@ void GLES3Swapchain::doInit(const SwapchainInfo &info) {
             EGL_NONE};
         EGL_CHECK(_gpuSwapchain->eglSurface = eglCreatePbufferSurface(context->eglDisplay, context->eglConfig, pbufferAttribs));
     } else if (surfaceType == EGLSurfaceType::WINDOW) {
-        EGL_CHECK(_gpuSwapchain->eglSurface = eglCreateWindowSurface(context->eglDisplay, context->eglConfig, window, nullptr));
+        EGL_CHECK(_gpuSwapchain->eglSurface = createWindowSurface(context->eglDisplay, context->eglConfig, window));
         if (_gpuSwapchain->eglSurface == EGL_NO_SURFACE) {
             CC_LOG_ERROR("Create window surface failed.");
             return;
@@ -227,7 +246,7 @@ void GLES3Swapchain::doCreateSurface(void *windowHandle) {
                 EGL_NONE};
             EGL_CHECK(_gpuSwapchain->eglSurface = eglCreatePbufferSurface(context->eglDisplay, context->eglConfig, pbufferAttribs));
         } else if (surfaceType == EGLSurfaceType::WINDOW) {
-            EGL_CHECK(_gpuSwapchain->eglSurface = eglCreateWindowSurface(context->eglDisplay, context->eglConfig, window, nullptr));
+            EGL_CHECK(_gpuSwapchain->eglSurface = createWindowSurface(context->eglDisplay, context->eglConfig, window));
 
             if (_gpuSwapchain->eglSurface == EGL_NO_SURFACE) {
                 CC_LOG_ERROR("Recreate window surface failed.");
