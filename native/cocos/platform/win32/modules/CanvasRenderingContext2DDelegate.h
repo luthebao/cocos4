@@ -83,26 +83,26 @@ public:
 
 private:
     static wchar_t *utf8ToUtf16(const ccstd::string &str, int *pRetLen = nullptr);
-    void removeCustomFont();
     int drawText(const ccstd::string &text, int x, int y);
     Size sizeWithText(const wchar_t *pszText, int nLen);
     void prepareBitmap(int nWidth, int nHeight);
     void deleteBitmap();
+    bool useBitmap();
+    HDC useFont();
     void fillTextureData();
     ccstd::array<float, 2> convertDrawPoint(Point point, const ccstd::string &text);
 
-public:
-    HDC _DC{nullptr};
+    // A label owns no GDI object between two draws (a process may hold 10 000; a label used to keep a device context, a bitmap and a font, so about
+    // 3 300 live labels blanked every new text). The device context and the fonts are shared by the process (the .cpp), the bitmap lives from the first draw
+    // to fillTextureData and is deleted there.
     HBITMAP _bmp{nullptr};
 
 private:
     cc::Data _imageData;
-    HFONT _font{static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT))};
+    HFONT _font{static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT))}; // from the shared cache: not owned
     HWND _wnd{nullptr};
-    HPEN _hpen;
+    HPEN _hpen{nullptr};
     PAINTSTRUCT _paintStruct;
-    ccstd::string _curFontPath;
-    int _savedDC{0};
     float _lineWidth{0.0F};
     float _bufferWidth{0.0F};
     float _bufferHeight{0.0F};

@@ -96,6 +96,10 @@ se::Value g_textInputCallback;
     callJSFunc("input", [textField.stringValue UTF8String]);
 }
 - (void)controlTextDidEndEditing:(NSNotification *)obj {
+    NSTextField *field = obj.object;
+    if ([obj.userInfo[@"NSTextMovement"] integerValue] == NSReturnTextMovement && field.superview != nil) {
+        callJSFunc("confirm", [field.stringValue UTF8String]); // Return confirms, as on the other platforms
+    }
     cc::EditBox::complete();
 }
 @end
@@ -179,6 +183,60 @@ void callJSFunc(const ccstd::string &type, const ccstd::string &text) {
     g_textInputCallback.toObject()->call(args, nullptr);
 }
 
+// The EditBox label's colour, size and alignment on the system field: jsb-editbox.js sends them, the field used to ignore them and drew black text on a
+// white box in the system font. The size is the label's in design pixels, scaled to the window by the design height.
+static const CGFloat kMcDesignHeight = 665; // the project's design resolution height (mcgame: 1050 x 665, the window keeps that ratio)
+
+static NSColor *mcColor(uint32_t rgb) { // jsb sends Color.toRGBValue(): red in the low byte
+    return [NSColor colorWithSRGBRed:(rgb & 0xff) / 255.0 green:((rgb >> 8) & 0xff) / 255.0 blue:((rgb >> 16) & 0xff) / 255.0 alpha:1.0];
+}
+
+static NSFont *mcFont(const cc::EditBox::ShowInfo &showInfo) {
+    NSWindow *nsWindow = NSApplication.sharedApplication.mainWindow;
+    CGFloat scale = nsWindow ? nsWindow.contentView.frame.size.height / kMcDesignHeight : 1.0;
+    CGFloat size = MAX(8.0, showInfo.fontSize * scale);
+    NSFont *font = [NSFont fontWithName:@"Tahoma" size:size];
+    return font ? font : [NSFont systemFontOfSize:size];
+}
+
+static NSTextAlignment mcAlign(uint32_t a) {
+    return a == cc::EditBox::CENTER ? NSTextAlignmentCenter : a == cc::EditBox::RIGHT ? NSTextAlignmentRight : NSTextAlignmentLeft;
+}
+
+/** a borderless NSTextField draws its line at the top of its frame: the frame shrinks to the line and stays centred, as the game's own label (vertical centre) */
+static void mcCenterTextField(NSTextField *textField) {
+    CGRect f = textField.frame;
+    CGFloat need = [textField.cell cellSizeForBounds:NSMakeRect(0, 0, f.size.width, f.size.height)].height;
+    if (need > 0 && need < f.size.height) {
+        f.origin.y += (f.size.height - need) / 2;
+        f.size.height = need;
+        textField.frame = f;
+    }
+}
+
+static void mcStyleTextField(NSTextField *textField, const cc::EditBox::ShowInfo &showInfo) {
+    NSColor *color = mcColor(showInfo.fontColor);
+    textField.drawsBackground = FALSE;
+    textField.bordered = FALSE;
+    textField.bezeled = FALSE;
+    textField.focusRingType = NSFocusRingTypeNone;
+    textField.textColor = color;
+    textField.font = mcFont(showInfo);
+    textField.alignment = mcAlign(showInfo.textAlignment);
+    NSText *editor = [textField currentEditor];
+    if ([editor isKindOfClass:[NSTextView class]]) ((NSTextView *)editor).insertionPointColor = color;
+}
+
+static void mcStyleTextView(NSTextView *textView, NSScrollView *scrollView, const cc::EditBox::ShowInfo &showInfo) {
+    NSColor *color = mcColor(showInfo.fontColor);
+    textView.drawsBackground = FALSE;
+    scrollView.drawsBackground = FALSE;
+    textView.textColor = color;
+    textView.insertionPointColor = color;
+    textView.font = mcFont(showInfo);
+    textView.alignment = mcAlign(showInfo.textAlignment);
+}
+
 void initTextView(const cc::EditBox::ShowInfo &showInfo) {
     CGRect rect = CGRectMake(showInfo.x, showInfo.y, showInfo.width, showInfo.height);
     if (!g_textView) {
@@ -202,9 +260,11 @@ void initTextView(const cc::EditBox::ShowInfo &showInfo) {
     NSWindow *nsWindow = NSApplication.sharedApplication.mainWindow;
     [nsWindow.contentView addSubview:g_scrollView];
     [nsWindow makeFirstResponder:g_scrollView];
+    mcStyleTextView(g_textView, g_scrollView, showInfo);
 }
 
 void doInitTextField(NSTextField *textField, const CGRect &rect, const cc::EditBox::ShowInfo &showInfo) {
+    mcStyleTextField(textField, showInfo);
     textField.editable = TRUE;
     textField.wantsLayer = TRUE;
     textField.frame = rect;
@@ -213,7 +273,9 @@ void doInitTextField(NSTextField *textField, const CGRect &rect, const cc::EditB
 
     NSWindow *nsWindow = NSApplication.sharedApplication.mainWindow;
     [nsWindow.contentView addSubview:textField];
+    mcCenterTextField(textField); // after the frame is set, before the field editor lays itself out
     [textField becomeFirstResponder];
+    mcStyleTextField(textField, showInfo); // the field editor (caret colour) exists once the field is first responder
 }
 
 void initTextField(const cc::EditBox::ShowInfo &showInfo) {

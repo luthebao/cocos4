@@ -125,6 +125,10 @@ Engine::Engine() {
     _windowEventListener.bind([this](const cc::WindowEvent &ev) { redirectWindowEvent(ev); });
 }
 
+// The writable path survives a restart (__restartVM = destroy() + init()): destroy() deletes the FileUtils and init() would make a new one with the
+// platform's default path, so a path the app moved (macOS: out of ~/Documents) came back as the default and the new VM looked for its files there.
+static ccstd::string gMcWritablePath;
+
 Engine::~Engine() {
     destroy();
 
@@ -135,6 +139,7 @@ Engine::~Engine() {
 int32_t Engine::init() {
     _scheduler = std::make_shared<Scheduler>();
     _fs = createFileUtils();
+    if (!gMcWritablePath.empty()) _fs->setWritablePath(gMcWritablePath);
     // May create gfx device in render subsystem in future.
     _gfxDevice = gfx::DeviceManager::create();
     _programLib = ccnew ProgramLib();
@@ -218,6 +223,7 @@ void Engine::destroy() {
 #endif
 
     CC_SAFE_DESTROY_AND_DELETE(_gfxDevice);
+    if (_fs) gMcWritablePath = _fs->getWritablePath();
     delete _fs;
     _scheduler.reset();
 
