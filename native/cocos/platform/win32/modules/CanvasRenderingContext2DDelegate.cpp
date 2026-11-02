@@ -28,11 +28,29 @@
 #include "platform/win32/modules/CanvasRenderingContext2DDelegate.h"
 #include "base/memory/Memory.h"
 
+#include <cmath>
 #include <map>
 #include <set>
 #include <string>
 
 namespace {
+/**
+ * GDI's grayscale anti-aliasing gives the plain coverage of a glyph's edge, and a texture blended over a panel then shows thin, pale strokes next to the
+ * browser's (DirectWrite / FreeType text is gamma-corrected for light text on a dark ground). The coverage goes through a curve (exponent 0.8) that darkens
+ * the edge pixels a little: 0 and 255 stay, 64 becomes 84, 128 becomes 147.
+ */
+const uint8_t *coverageCurve() {
+    static uint8_t table[256];
+    static bool ready = false;
+    if (!ready) {
+        for (int i = 0; i < 256; ++i) {
+            table[i] = static_cast<uint8_t>(std::lround(255.0 * std::pow(i / 255.0, 0.8)));
+        }
+        ready = true;
+    }
+    return table;
+}
+
 void fillRectWithColor(uint8_t *buf, uint32_t totalWidth, uint32_t totalHeight, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     CC_ASSERT(x + width <= totalWidth);
     CC_ASSERT(y + height <= totalHeight);
@@ -524,6 +542,7 @@ void CanvasRenderingContext2DDelegate::fillTextureData() {
         COLORREF *pImage = nullptr;
         int bufferHeight = static_cast<int>(_bufferHeight);
         int bufferWidth = static_cast<int>(_bufferWidth);
+        const uint8_t *curve = coverageCurve();
         for (int y = 0; y < bufferHeight; ++y) {
             pPixel = (COLORREF *)dataBuf + y * bufferWidth;
             pImage = (COLORREF *)imageBuf + y * bufferWidth;
@@ -533,7 +552,7 @@ void CanvasRenderingContext2DDelegate::fillTextureData() {
                 // Because text is drawn in white color, and background color is black,
                 // so the red value is equal to alpha value. And we should keep this value
                 // as it includes anti-atlas information.
-                uint8_t alpha = GetRValue(clr);
+                uint8_t alpha = curve[GetRValue(clr)];
                 if (alpha > 0) {
                     val = (alpha << 24) | textColor;
                 }

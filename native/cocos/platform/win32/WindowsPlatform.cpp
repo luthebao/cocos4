@@ -92,6 +92,17 @@ WindowsPlatform::~WindowsPlatform() {
 }
 
 int32_t WindowsPlatform::init() {
+    // Per-Monitor-V2 DPI awareness, before SDL makes a window: without it Windows draws the window at 96 dpi and stretches it as a bitmap on a display set to
+    // 125% or more (a blurred game). The exe has no manifest of its own (the linker's default one names no DPI awareness) and SDL leaves the process alone
+    // unless a hint is set. user32 is read at run time: the call needs Windows 10 1703.
+    {
+        using SetDpiContextFn = BOOL(WINAPI *)(HANDLE);
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        auto setDpiContext = user32 ? reinterpret_cast<SetDpiContextFn>(reinterpret_cast<void *>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) : nullptr;
+        if (setDpiContext) {
+            setDpiContext(reinterpret_cast<HANDLE>(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        }
+    }
     registerInterface(std::make_shared<Accelerometer>());
     registerInterface(std::make_shared<Battery>());
     registerInterface(std::make_shared<Network>());

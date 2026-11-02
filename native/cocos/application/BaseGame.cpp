@@ -31,7 +31,47 @@
 #if CC_PLATFORM == CC_PLATFORM_ANDROID
     #include "platform/android/adpf_manager.h"
 #endif
+#if CC_PLATFORM == CC_PLATFORM_WINDOWS
+    #include <Windows.h>
+#endif
 extern "C" void cc_load_all_plugins(); // NOLINT
+
+#if CC_PLATFORM == CC_PLATFORM_WINDOWS
+namespace {
+// The first window of the Windows exe (the game's 1050 x 665 stage, the Flash client's size) in physical pixels: scaled by the display's DPI (the process is
+// DPI-aware, so SDL takes pixels) and shrunk to fit the work area when the display is small. The engine's own default was 800 x 600, which the game drew at
+// 0.76 of its stage: small, with every label shrunk and washed out.
+void defaultWindowSize(int &width, int &height) {
+    const float stageWidth = 1050.0F;
+    const float stageHeight = 665.0F;
+    float scale = 1.0F;
+    using GetDpiForSystemFn = UINT(WINAPI *)();
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    auto getDpiForSystem = user32 ? reinterpret_cast<GetDpiForSystemFn>(reinterpret_cast<void *>(GetProcAddress(user32, "GetDpiForSystem"))) : nullptr;
+    if (getDpiForSystem) {
+        scale = static_cast<float>(getDpiForSystem()) / 96.0F;
+    }
+    float fit = 1.0F;
+    RECT work = {0, 0, 0, 0};
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+        // room for the title bar, the frame and the 50 px the window starts from
+        const float availableWidth = static_cast<float>(work.right - work.left) - 100.0F * scale;
+        const float availableHeight = static_cast<float>(work.bottom - work.top) - 140.0F * scale;
+        const float fitWidth = availableWidth / (stageWidth * scale);
+        const float fitHeight = availableHeight / (stageHeight * scale);
+        fit = fitWidth < fitHeight ? fitWidth : fitHeight;
+        if (fit > 1.0F) {
+            fit = 1.0F;
+        }
+        if (fit < 0.5F) {
+            fit = 0.5F;
+        }
+    }
+    width = static_cast<int>(stageWidth * scale * fit + 0.5F);
+    height = static_cast<int>(stageHeight * scale * fit + 0.5F);
+}
+} // namespace
+#endif
 
 namespace cc {
 
@@ -54,12 +94,25 @@ int BaseGame::init() {
     // override default value
     //_windowInfo.x      = _windowInfo.x == -1 ? 0 : _windowInfo.x;
     //_windowInfo.y      = _windowInfo.y == -1 ? 0 : _windowInfo.y;
+    #if CC_PLATFORM == CC_PLATFORM_WINDOWS
+    int defaultWidth = 800;
+    int defaultHeight = 600;
+    defaultWindowSize(defaultWidth, defaultHeight);
+    _windowInfo.width = _windowInfo.width == -1 ? defaultWidth : _windowInfo.width;
+    _windowInfo.height = _windowInfo.height == -1 ? defaultHeight : _windowInfo.height;
+    _windowInfo.flags = _windowInfo.flags == -1 ? cc::ISystemWindow::CC_WINDOW_SHOWN |
+                                                      cc::ISystemWindow::CC_WINDOW_RESIZABLE |
+                                                      cc::ISystemWindow::CC_WINDOW_INPUT_FOCUS |
+                                                      cc::ISystemWindow::CC_WINDOW_ALLOW_HIGHDPI
+                                                : _windowInfo.flags;
+    #else
     _windowInfo.width = _windowInfo.width == -1 ? 800 : _windowInfo.width;
     _windowInfo.height = _windowInfo.height == -1 ? 600 : _windowInfo.height;
     _windowInfo.flags = _windowInfo.flags == -1 ? cc::ISystemWindow::CC_WINDOW_SHOWN |
                                                       cc::ISystemWindow::CC_WINDOW_RESIZABLE |
                                                       cc::ISystemWindow::CC_WINDOW_INPUT_FOCUS
                                                 : _windowInfo.flags;
+    #endif
     std::call_once(_windowCreateFlag, [&]() {
         ISystemWindowInfo info;
         info.title = _windowInfo.title;
