@@ -38,21 +38,40 @@
 namespace {
 /**
  * GDI's grayscale anti-aliasing gives the plain coverage of a glyph's edge, and a texture blended over a panel then shows thin, pale strokes next to the
- * browser's (DirectWrite / FreeType text is gamma-corrected for light text on a dark ground). The coverage goes through a curve (exponent 0.8) that darkens
- * the edge pixels a little: 0 and 255 stay, 64 becomes 84, 128 becomes 147. (A try at widening the stems by a fraction of a pixel made the letters of a small
- * label touch: the answer to thin text at 12 px is a window twice the stage, BaseGame.cpp.)
+ * browser's (DirectWrite / FreeType text is gamma-corrected for light text on a dark ground). The coverage goes through a curve (exponent 0.7) that darkens
+ * the edge pixels a little: 0 and 255 stay, 64 becomes 94, 128 becomes 157. (A try at widening the stems by a fraction of a pixel made the letters of a small
+ * label touch.)
  */
 const uint8_t *coverageCurve() {
     static uint8_t table[256];
     static bool ready = false;
     if (!ready) {
         for (int i = 0; i < 256; ++i) {
-            table[i] = static_cast<uint8_t>(std::lround(255.0 * std::pow(i / 255.0, 0.8)));
+            table[i] = static_cast<uint8_t>(std::lround(255.0 * std::pow(i / 255.0, 0.7)));
         }
         ready = true;
     }
     return table;
 }
+
+/**
+ * The glyphs are drawn TEXT_SCALE times bigger than the label (the bitmap, the font height, the positions and the sizes in the delegate are in these units) and
+ * the coverage is averaged down to the label's pixels in fillTextureData. GDI's own rasteriser at the label's size bends every glyph to the pixel grid
+ * (hinting: a 12 px Tahoma "o" comes out square, its advances rounded), which does not look like Tahoma next to Flash or macOS; at four times the size the
+ * hinting moves nothing visible and the shapes are the font's own (owner, 2026-11-03: "the font does not look like Tahoma", "the letters are round, not bent").
+ * The text's measure is the same draw's, divided by TEXT_SCALE (fractional advances, as Flash and the browser have).
+ */
+constexpr int TEXT_SCALE = 4;
+
+/** the averaged coverage that reads as 0 and as 255 (fillTextureData): a stem of 1.1 pixels is solid, the faint fringe of a curve is not drawn */
+constexpr int COVER_LOW = 30;
+constexpr int COVER_HIGH = 225;
+
+/** a font of this height in pixels or less gets half a pixel more between its letters (useFont) */
+constexpr int SMALL_TEXT_PX = 14;
+
+/** the smallest outline radius in pixels: 1.5 gives the ring's first pixel the full weight (see Pass::STROKE in fillTextureData) */
+constexpr float MIN_OUTLINE_RADIUS = 1.5F;
 
 /** source-over of a colour with coverage `sa` (0 to 255) onto an RGBA pixel of the label's buffer (straight alpha, as the buffer holds it) */
 void blendPixel(uint8_t *px, uint32_t sr, uint32_t sg, uint32_t sb, uint32_t sa) {
@@ -221,7 +240,7 @@ void CanvasRenderingContext2DDelegate::beginPath() {
         SelectObject(dc, GetStockObject(BLACK_PEN));
         DeleteObject(_hpen);
     }
-    _hpen = CreatePen(PS_SOLID, static_cast<int>(_lineWidth), RGB(255, 255, 255));
+    _hpen = CreatePen(PS_SOLID, static_cast<int>(_lineWidth * TEXT_SCALE), RGB(255, 255, 255));
     SelectObject(dc, _hpen);
 
     SetBkMode(dc, TRANSPARENT);
@@ -235,7 +254,7 @@ void CanvasRenderingContext2DDelegate::moveTo(float x, float y) {
     if (!dc || !_bmp) return;
     SelectObject(dc, _bmp);
     SelectObject(dc, _hpen);
-    MoveToEx(dc, static_cast<int>(x), static_cast<int>(-(y - _bufferHeight - _fontSize)), nullptr);
+    MoveToEx(dc, static_cast<int>(x * TEXT_SCALE), static_cast<int>(-(y - _bufferHeight - _fontSize) * TEXT_SCALE), nullptr);
 }
 
 void CanvasRenderingContext2DDelegate::lineTo(float x, float y) {
@@ -243,7 +262,7 @@ void CanvasRenderingContext2DDelegate::lineTo(float x, float y) {
     if (!dc || !_bmp) return;
     SelectObject(dc, _bmp);
     SelectObject(dc, _hpen);
-    LineTo(dc, static_cast<int>(x), static_cast<int>(-(y - _bufferHeight - _fontSize)));
+    LineTo(dc, static_cast<int>(x * TEXT_SCALE), static_cast<int>(-(y - _bufferHeight - _fontSize) * TEXT_SCALE));
 }
 
 void CanvasRenderingContext2DDelegate::stroke() {
@@ -308,7 +327,7 @@ void CanvasRenderingContext2DDelegate::fillText(const ccstd::string &text, float
 
     Point offsetPoint = convertDrawPoint(Point{x, y}, text);
 
-    drawText(text, (int)offsetPoint[0], (int)offsetPoint[1]);
+    drawText(text, static_cast<int>(std::lround(offsetPoint[0] * TEXT_SCALE)), static_cast<int>(std::lround(offsetPoint[1] * TEXT_SCALE)));
     fillTextureData(Pass::FILL);
 }
 
@@ -369,7 +388,7 @@ void CanvasRenderingContext2DDelegate::updateFont(const ccstd::string &fontName,
         }
 
         if (_fontSize) {
-            tFont.lfHeight = -_fontSize;
+            tFont.lfHeight = -static_cast<LONG>(std::lround(fontSize * TEXT_SCALE));
         }
 
         if (bold) {
@@ -457,6 +476,10 @@ HDC CanvasRenderingContext2DDelegate::useFont() {
     HDC dc = sharedDC();
     if (dc && _font) {
         SelectObject(dc, _font);
+        // Text of a window of the stage's own size (12 px glyphs) has an outline a pixel wide (Pass::STROKE), which fills the gap between two letters: half a
+        // pixel more between them, in the measuring too (every size goes through here). A bigger window draws bigger glyphs, which keep their own gaps (owner,
+        // 2026-11-03: "the letters are too close, more space").
+        SetTextCharacterExtra(dc, (_fontSize > 0 && _fontSize <= SMALL_TEXT_PX) ? TEXT_SCALE / 2 : 0);
     }
     return dc;
 }
@@ -468,7 +491,7 @@ bool CanvasRenderingContext2DDelegate::useBitmap() {
         return false;
     }
     if (!_bmp) {
-        _bmp = CreateBitmap(static_cast<int>(_bufferWidth), static_cast<int>(_bufferHeight), 1, 32, nullptr);
+        _bmp = CreateBitmap(static_cast<int>(_bufferWidth) * TEXT_SCALE, static_cast<int>(_bufferHeight) * TEXT_SCALE, 1, 32, nullptr);
         if (!_bmp) {
             return false;
         }
@@ -488,7 +511,8 @@ int CanvasRenderingContext2DDelegate::drawText(const ccstd::string &text, int x,
         CC_BREAK_IF(!dc);
         CC_BREAK_IF(!useBitmap());
 
-        DWORD dwFmt = DT_SINGLELINE | DT_NOPREFIX;
+        // DT_NOCLIP: the box below is the measured size, and a glyph that overhangs it (italics, the space after the last letter) must still be drawn
+        DWORD dwFmt = DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP;
 
         int bufferLen = 0;
         pwszBuffer = utf8ToUtf16(text, &bufferLen);
@@ -499,8 +523,9 @@ int CanvasRenderingContext2DDelegate::drawText(const ccstd::string &text, int x,
 
         RECT rcText = {0};
 
-        rcText.right = static_cast<int>(newSize[0]);
-        rcText.bottom = static_cast<int>(newSize[1]);
+        // the bitmap's units (TEXT_SCALE times the label's pixels)
+        rcText.right = static_cast<int>(std::ceil(newSize[0] * TEXT_SCALE));
+        rcText.bottom = static_cast<int>(std::ceil(newSize[1] * TEXT_SCALE));
 
         LONG offsetX = x;
         LONG offsetY = y;
@@ -534,9 +559,15 @@ CanvasRenderingContext2DDelegate::Size CanvasRenderingContext2DDelegate::sizeWit
 
         // measure text size
         DrawTextW(dc, pszText, nLen, &rc, dwCalcFmt);
+        // DrawText's calculated width leaves out the extra space between the letters (useFont): the text extent has it
+        SIZE extent = {0, 0};
+        if (GetTextExtentPoint32W(dc, pszText, nLen, &extent)) {
+            rc.right = (std::max)(rc.right, extent.cx);
+        }
 
-        tRet[0] = static_cast<float>(rc.right);
-        tRet[1] = static_cast<float>(rc.bottom);
+        // the label's pixels: the font is TEXT_SCALE times its size
+        tRet[0] = static_cast<float>(rc.right) / TEXT_SCALE;
+        tRet[1] = static_cast<float>(rc.bottom) / TEXT_SCALE;
     } while (false);
 
     return tRet;
@@ -570,8 +601,11 @@ void CanvasRenderingContext2DDelegate::fillTextureData(Pass pass) {
         CC_BREAK_IF(!dc || !_bmp);
         SelectObject(dc, _bmp);
 
-        auto dataLen = static_cast<int>(_bufferWidth * _bufferHeight * 4);
-        auto *dataBuf = static_cast<unsigned char *>(malloc(sizeof(unsigned char) * dataLen));
+        // the bitmap is TEXT_SCALE times the label's size in both directions
+        const int bitmapWidth = static_cast<int>(_bufferWidth) * TEXT_SCALE;
+        const int bitmapHeight = static_cast<int>(_bufferHeight) * TEXT_SCALE;
+        const size_t dataLen = static_cast<size_t>(bitmapWidth) * bitmapHeight * 4;
+        auto *dataBuf = static_cast<unsigned char *>(malloc(dataLen));
         CC_BREAK_IF(!dataBuf);
         unsigned char *imageBuf = _imageData.getBytes();
         if (!imageBuf) {
@@ -593,7 +627,7 @@ void CanvasRenderingContext2DDelegate::fillTextureData(Pass pass) {
 
         // copy pixel data
         bi.bmiHeader.biHeight = (bi.bmiHeader.biHeight > 0) ? -bi.bmiHeader.biHeight : bi.bmiHeader.biHeight;
-        GetDIBits(dc, _bmp, 0, static_cast<UINT>(_bufferHeight), dataBuf,
+        GetDIBits(dc, _bmp, 0, static_cast<UINT>(bitmapHeight), dataBuf,
                   (LPBITMAPINFO)&bi, DIB_RGB_COLORS);
 
         const int bufferHeight = static_cast<int>(_bufferHeight);
@@ -601,9 +635,23 @@ void CanvasRenderingContext2DDelegate::fillTextureData(Pass pass) {
         // Because text is drawn in white color, and background color is black,
         // so the red value is equal to alpha value. And we should keep this value
         // as it includes anti-atlas information.
+        // The coverage of a label's pixel is the mean of the TEXT_SCALE x TEXT_SCALE bitmap pixels it covers, with the levels COVER_LOW to COVER_HIGH
+        // stretched to 0 to 255: a stem a pixel wide and a bit more is solid, and the faint fringe of the averaging is not drawn.
         std::vector<uint8_t> cover(static_cast<size_t>(bufferWidth) * bufferHeight);
-        for (size_t i = 0; i < cover.size(); ++i) {
-            cover[i] = GetRValue(reinterpret_cast<COLORREF *>(dataBuf)[i]);
+        const auto *bits = reinterpret_cast<const COLORREF *>(dataBuf);
+        for (int y = 0; y < bufferHeight; ++y) {
+            for (int x = 0; x < bufferWidth; ++x) {
+                int sum = 0;
+                for (int dy = 0; dy < TEXT_SCALE; ++dy) {
+                    const COLORREF *row = bits + static_cast<size_t>(y * TEXT_SCALE + dy) * bitmapWidth + x * TEXT_SCALE;
+                    for (int dx = 0; dx < TEXT_SCALE; ++dx) {
+                        sum += GetRValue(row[dx]);
+                    }
+                }
+                const int mean = sum / (TEXT_SCALE * TEXT_SCALE);
+                cover[static_cast<size_t>(y) * bufferWidth + x] = static_cast<uint8_t>(
+                    std::lround(255.0 * (std::min)(1.0, (std::max)(0.0, (mean - COVER_LOW) / static_cast<double>(COVER_HIGH - COVER_LOW)))));
+            }
         }
         free(dataBuf);
 
@@ -620,7 +668,10 @@ void CanvasRenderingContext2DDelegate::fillTextureData(Pass pass) {
                 }
             }
         } else if (pass == Pass::STROKE) {
-            const float radius = _lineWidth * 0.5F;
+            // An edge thinner than one pixel is one full pixel: the game's hairline outline (0.75 of a stage pixel) is 1.5 device pixels in a window twice the stage
+            // (a solid ring) but 0.75 in a window of the stage's own size, where the ring below covers a quarter of a pixel and the text reads thin and pale next
+            // to Flash's dark edge (owner, 2026-11-03: the text is thinner when the window is shrunk to 1050).
+            const float radius = _lineWidth > 0.0F ? (std::max)(_lineWidth * 0.5F, MIN_OUTLINE_RADIUS) : 0.0F;
             if (radius > 0.0F) {
                 const int reach = static_cast<int>(std::ceil(radius + 0.5F));
                 // the box of the glyphs: nothing outside it grown by `reach` is touched
@@ -726,14 +777,14 @@ ccstd::array<float, 2> CanvasRenderingContext2DDelegate::convertDrawPoint(Point 
     if (_textBaseLine == TextBaseline::TOP) {
         // DrawText default
         GetTextMetrics(useFont(), &_tm);
-        point[1] += -_tm.tmInternalLeading;
+        point[1] += -static_cast<float>(_tm.tmInternalLeading) / TEXT_SCALE; // the font's units are TEXT_SCALE times the label's
     } else if (_textBaseLine == TextBaseline::MIDDLE) {
         point[1] += -textSize[1] / 2.0f;
     } else if (_textBaseLine == TextBaseline::BOTTOM) {
         point[1] += -textSize[1];
     } else if (_textBaseLine == TextBaseline::ALPHABETIC) {
         GetTextMetrics(useFont(), &_tm);
-        point[1] -= _tm.tmAscent;
+        point[1] -= static_cast<float>(_tm.tmAscent) / TEXT_SCALE;
     }
 
     return point;
@@ -767,7 +818,7 @@ void CanvasRenderingContext2DDelegate::strokeText(const ccstd::string &text,
 
     Point offsetPoint = convertDrawPoint(Point{x, y}, text);
 
-    drawText(text, (int)offsetPoint[0], (int)offsetPoint[1]);
+    drawText(text, static_cast<int>(std::lround(offsetPoint[0] * TEXT_SCALE)), static_cast<int>(std::lround(offsetPoint[1] * TEXT_SCALE)));
     fillTextureData(Pass::STROKE);
 }
 
