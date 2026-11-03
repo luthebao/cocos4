@@ -28,16 +28,19 @@
 #include "platform/win32/modules/CanvasRenderingContext2DDelegate.h"
 #include "base/memory/Memory.h"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <set>
+#include <vector>
 #include <string>
 
 namespace {
 /**
  * GDI's grayscale anti-aliasing gives the plain coverage of a glyph's edge, and a texture blended over a panel then shows thin, pale strokes next to the
  * browser's (DirectWrite / FreeType text is gamma-corrected for light text on a dark ground). The coverage goes through a curve (exponent 0.8) that darkens
- * the edge pixels a little: 0 and 255 stay, 64 becomes 84, 128 becomes 147.
+ * the edge pixels a little: 0 and 255 stay, 64 becomes 84, 128 becomes 147. (A try at widening the stems by a fraction of a pixel made the letters of a small
+ * label touch: the answer to thin text at 12 px is a window twice the stage, BaseGame.cpp.)
  */
 const uint8_t *coverageCurve() {
     static uint8_t table[256];
@@ -49,6 +52,61 @@ const uint8_t *coverageCurve() {
         ready = true;
     }
     return table;
+}
+
+/** source-over of a colour with coverage `sa` (0 to 255) onto an RGBA pixel of the label's buffer (straight alpha, as the buffer holds it) */
+void blendPixel(uint8_t *px, uint32_t sr, uint32_t sg, uint32_t sb, uint32_t sa) {
+    if (sa == 0) {
+        return;
+    }
+    const uint32_t keep = static_cast<uint32_t>(px[3]) * (255 - sa); // the destination's share, scaled by 255
+    const uint32_t denom = sa * 255 + keep;
+    px[0] = static_cast<uint8_t>((sr * sa * 255 + px[0] * keep + denom / 2) / denom);
+    px[1] = static_cast<uint8_t>((sg * sa * 255 + px[1] * keep + denom / 2) / denom);
+    px[2] = static_cast<uint8_t>((sb * sa * 255 + px[2] * keep + denom / 2) / denom);
+    px[3] = static_cast<uint8_t>((denom + 127) / 255);
+}
+
+/** a Gaussian blur of a w x h coverage (0 to 1) with the standard deviation `sigma`, in place */
+void blurCoverage(std::vector<float> &m, int w, int h, float sigma) {
+    const int radius = (std::min)(32, static_cast<int>(std::ceil(sigma * 3.0F)));
+    if (radius < 1) {
+        return;
+    }
+    std::vector<float> kernel(radius * 2 + 1);
+    float sum = 0.0F;
+    for (int i = -radius; i <= radius; ++i) {
+        kernel[i + radius] = std::exp(-(i * i) / (2.0F * sigma * sigma));
+        sum += kernel[i + radius];
+    }
+    for (auto &k : kernel) {
+        k /= sum;
+    }
+    std::vector<float> tmp(m.size(), 0.0F);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            float v = 0.0F;
+            for (int i = -radius; i <= radius; ++i) {
+                const int nx = x + i;
+                if (nx >= 0 && nx < w) {
+                    v += m[y * w + nx] * kernel[i + radius];
+                }
+            }
+            tmp[y * w + x] = v;
+        }
+    }
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            float v = 0.0F;
+            for (int i = -radius; i <= radius; ++i) {
+                const int ny = y + i;
+                if (ny >= 0 && ny < h) {
+                    v += tmp[ny * w + x] * kernel[i + radius];
+                }
+            }
+            m[y * w + x] = v;
+        }
+    }
 }
 
 void fillRectWithColor(uint8_t *buf, uint32_t totalWidth, uint32_t totalHeight, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -199,7 +257,7 @@ void CanvasRenderingContext2DDelegate::stroke() {
         return;
     }
 
-    fillTextureData();
+    fillTextureData(Pass::LINE);
 }
 
 void CanvasRenderingContext2DDelegate::saveContext() {
@@ -251,7 +309,7 @@ void CanvasRenderingContext2DDelegate::fillText(const ccstd::string &text, float
     Point offsetPoint = convertDrawPoint(Point{x, y}, text);
 
     drawText(text, (int)offsetPoint[0], (int)offsetPoint[1]);
-    fillTextureData();
+    fillTextureData(Pass::FILL);
 }
 
 void CanvasRenderingContext2DDelegate::strokeText(const ccstd::string &text, float /*x*/, float /*y*/, float /*maxWidth*/) const {
@@ -501,7 +559,11 @@ void CanvasRenderingContext2DDelegate::deleteBitmap() {
     }
 }
 
-void CanvasRenderingContext2DDelegate::fillTextureData() {
+// The bitmap holds the glyphs drawn white on black: its red channel is their coverage. It is painted into the label's RGBA buffer as `pass` says:
+// - FILL: the text in the fill colour, over a shadow of it when the label has one (LabelShadow: the coverage moved by the offset, blurred, in the shadow colour);
+// - STROKE: the coverage grown by half the line width, in the stroke colour (the engine fills the text over it afterwards);
+// - LINE: a line of `stroke()` (the underline), as before: the pixels it covers are replaced.
+void CanvasRenderingContext2DDelegate::fillTextureData(Pass pass) {
     do {
         HDC dc = sharedDC();
         // no bitmap: nothing was drawn (GDI refused it), the buffer stays transparent
@@ -534,33 +596,120 @@ void CanvasRenderingContext2DDelegate::fillTextureData() {
         GetDIBits(dc, _bmp, 0, static_cast<UINT>(_bufferHeight), dataBuf,
                   (LPBITMAPINFO)&bi, DIB_RGB_COLORS);
 
-        uint8_t r = static_cast<uint8_t>(round(_fillStyle[0] * 255));
-        uint8_t g = static_cast<uint8_t>(round(_fillStyle[1] * 255));
-        uint8_t b = static_cast<uint8_t>(round(_fillStyle[2] * 255));
-        COLORREF textColor = (b << 16 | g << 8 | r) & 0x00ffffff;
-        COLORREF *pPixel = nullptr;
-        COLORREF *pImage = nullptr;
-        int bufferHeight = static_cast<int>(_bufferHeight);
-        int bufferWidth = static_cast<int>(_bufferWidth);
-        const uint8_t *curve = coverageCurve();
-        for (int y = 0; y < bufferHeight; ++y) {
-            pPixel = (COLORREF *)dataBuf + y * bufferWidth;
-            pImage = (COLORREF *)imageBuf + y * bufferWidth;
-            for (int x = 0; x < bufferWidth; ++x) {
-                COLORREF &clr = *pPixel;
-                COLORREF &val = *pImage;
-                // Because text is drawn in white color, and background color is black,
-                // so the red value is equal to alpha value. And we should keep this value
-                // as it includes anti-atlas information.
-                uint8_t alpha = curve[GetRValue(clr)];
-                if (alpha > 0) {
-                    val = (alpha << 24) | textColor;
-                }
-                ++pPixel;
-                ++pImage;
-            }
+        const int bufferHeight = static_cast<int>(_bufferHeight);
+        const int bufferWidth = static_cast<int>(_bufferWidth);
+        // Because text is drawn in white color, and background color is black,
+        // so the red value is equal to alpha value. And we should keep this value
+        // as it includes anti-atlas information.
+        std::vector<uint8_t> cover(static_cast<size_t>(bufferWidth) * bufferHeight);
+        for (size_t i = 0; i < cover.size(); ++i) {
+            cover[i] = GetRValue(reinterpret_cast<COLORREF *>(dataBuf)[i]);
         }
         free(dataBuf);
+
+        const uint8_t *curve = coverageCurve();
+        auto channel = [](float v) { return static_cast<uint32_t>(std::lround(v * 255.0F)); };
+
+        if (pass == Pass::LINE) {
+            const COLORREF color = (channel(_fillStyle[2]) << 16 | channel(_fillStyle[1]) << 8 | channel(_fillStyle[0])) & 0x00ffffff;
+            auto *image = reinterpret_cast<COLORREF *>(imageBuf);
+            for (size_t i = 0; i < cover.size(); ++i) {
+                const uint8_t alpha = curve[cover[i]];
+                if (alpha > 0) {
+                    image[i] = (static_cast<COLORREF>(alpha) << 24) | color;
+                }
+            }
+        } else if (pass == Pass::STROKE) {
+            const float radius = _lineWidth * 0.5F;
+            if (radius > 0.0F) {
+                const int reach = static_cast<int>(std::ceil(radius + 0.5F));
+                // the box of the glyphs: nothing outside it grown by `reach` is touched
+                int minX = bufferWidth;
+                int minY = bufferHeight;
+                int maxX = -1;
+                int maxY = -1;
+                for (int y = 0; y < bufferHeight; ++y) {
+                    for (int x = 0; x < bufferWidth; ++x) {
+                        if (cover[static_cast<size_t>(y) * bufferWidth + x] > 0) {
+                            minX = (std::min)(minX, x);
+                            maxX = (std::max)(maxX, x);
+                            minY = (std::min)(minY, y);
+                            maxY = (std::max)(maxY, y);
+                        }
+                    }
+                }
+                // the weight of a neighbour at a distance: 1 inside the radius, falling to 0 over one pixel (the edge is anti-aliased)
+                std::vector<float> weight(static_cast<size_t>(2 * reach + 1) * (2 * reach + 1));
+                for (int dy = -reach; dy <= reach; ++dy) {
+                    for (int dx = -reach; dx <= reach; ++dx) {
+                        const float d = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+                        weight[static_cast<size_t>(dy + reach) * (2 * reach + 1) + (dx + reach)] = (std::min)(1.0F, (std::max)(0.0F, radius + 0.5F - d));
+                    }
+                }
+                const uint32_t sr = channel(_strokeStyle[0]);
+                const uint32_t sg = channel(_strokeStyle[1]);
+                const uint32_t sb = channel(_strokeStyle[2]);
+                for (int y = (std::max)(0, minY - reach); y <= (std::min)(bufferHeight - 1, maxY + reach); ++y) {
+                    for (int x = (std::max)(0, minX - reach); x <= (std::min)(bufferWidth - 1, maxX + reach); ++x) {
+                        float best = 0.0F;
+                        for (int dy = -reach; dy <= reach; ++dy) {
+                            const int ny = y + dy;
+                            if (ny < 0 || ny >= bufferHeight) {
+                                continue;
+                            }
+                            for (int dx = -reach; dx <= reach; ++dx) {
+                                const int nx = x + dx;
+                                if (nx < 0 || nx >= bufferWidth) {
+                                    continue;
+                                }
+                                const uint8_t c = cover[static_cast<size_t>(ny) * bufferWidth + nx];
+                                if (c == 0) {
+                                    continue;
+                                }
+                                const float v = (std::min)(c / 255.0F, weight[static_cast<size_t>(dy + reach) * (2 * reach + 1) + (dx + reach)]);
+                                best = (std::max)(best, v);
+                            }
+                        }
+                        const uint32_t alpha = channel(best * _strokeStyle[3]);
+                        blendPixel(imageBuf + (static_cast<size_t>(y) * bufferWidth + x) * 4, sr, sg, sb, alpha);
+                    }
+                }
+            }
+        } else {
+            // the shadow first: a canvas draws it under the text
+            const int offsetX = static_cast<int>(std::lround(_shadowOffsetX));
+            const int offsetY = static_cast<int>(std::lround(_shadowOffsetY));
+            if (_shadowColor[3] > 0.0F && (_shadowBlur > 0.0F || offsetX != 0 || offsetY != 0)) {
+                std::vector<float> shadow(cover.size(), 0.0F);
+                for (int y = 0; y < bufferHeight; ++y) {
+                    const int sy = y + offsetY;
+                    if (sy < 0 || sy >= bufferHeight) {
+                        continue;
+                    }
+                    for (int x = 0; x < bufferWidth; ++x) {
+                        const int sx = x + offsetX;
+                        if (sx >= 0 && sx < bufferWidth) {
+                            shadow[static_cast<size_t>(sy) * bufferWidth + sx] = cover[static_cast<size_t>(y) * bufferWidth + x] / 255.0F;
+                        }
+                    }
+                }
+                if (_shadowBlur > 0.0F) {
+                    blurCoverage(shadow, bufferWidth, bufferHeight, _shadowBlur * 0.5F); // a canvas: the blur is twice the standard deviation
+                }
+                const uint32_t sr = channel(_shadowColor[0]);
+                const uint32_t sg = channel(_shadowColor[1]);
+                const uint32_t sb = channel(_shadowColor[2]);
+                for (size_t i = 0; i < shadow.size(); ++i) {
+                    blendPixel(imageBuf + i * 4, sr, sg, sb, channel(shadow[i] * _shadowColor[3]));
+                }
+            }
+            const uint32_t fr = channel(_fillStyle[0]);
+            const uint32_t fg = channel(_fillStyle[1]);
+            const uint32_t fb = channel(_fillStyle[2]);
+            for (size_t i = 0; i < cover.size(); ++i) {
+                blendPixel(imageBuf + i * 4, fr, fg, fb, channel(curve[cover[i]] / 255.0F * _fillStyle[3]));
+            }
+        }
     } while (false);
     // the pixels are in _imageData now: the bitmap is not needed until the next draw
     deleteBitmap();
@@ -606,10 +755,20 @@ void CanvasRenderingContext2DDelegate::fillImageData(const Data & /* imageData *
                                                      float /* offsetY */) {
 }
 
-void CanvasRenderingContext2DDelegate::strokeText(const ccstd::string & /* text */,
-                                                  float /* x */,
-                                                  float /* y */,
+// The outline of a label (LabelOutline): the engine strokes the text with the outline colour, then fills it over. It was empty here, so a Windows label had no
+// outline while macOS and iOS drew one.
+void CanvasRenderingContext2DDelegate::strokeText(const ccstd::string &text,
+                                                  float x,
+                                                  float y,
                                                   float /* maxWidth */) {
+    if (text.empty() || _bufferWidth < 1.0F || _bufferHeight < 1.0F) {
+        return;
+    }
+
+    Point offsetPoint = convertDrawPoint(Point{x, y}, text);
+
+    drawText(text, (int)offsetPoint[0], (int)offsetPoint[1]);
+    fillTextureData(Pass::STROKE);
 }
 
 void CanvasRenderingContext2DDelegate::rect(float /* x */,

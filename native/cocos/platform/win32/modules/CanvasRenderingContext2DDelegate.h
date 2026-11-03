@@ -76,12 +76,18 @@ public:
     void strokeText(const ccstd::string &text, float /*x*/, float /*y*/, float /*maxWidth*/) override;
     void rect(float x, float y, float w, float h) override;
     void updateData() override {}
-    void setShadowBlur(float blur) override {}
-    void setShadowColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a) override {}
-    void setShadowOffsetX(float offsetX) override {}
-    void setShadowOffsetY(float offsetY) override {}
+    void setShadowBlur(float blur) override { _shadowBlur = blur; }
+    void setShadowColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a) override { _shadowColor = {r / 255.0F, g / 255.0F, b / 255.0F, a / 255.0F}; }
+    void setShadowOffsetX(float offsetX) override { _shadowOffsetX = offsetX; }
+    void setShadowOffsetY(float offsetY) override { _shadowOffsetY = offsetY; }
 
 private:
+    /** what the glyph coverage of the bitmap is painted as: the text (with its shadow), its outline, or a line (the old replace-the-pixel paint) */
+    enum class Pass {
+        FILL,
+        STROKE,
+        LINE
+    };
     static wchar_t *utf8ToUtf16(const ccstd::string &str, int *pRetLen = nullptr);
     int drawText(const ccstd::string &text, int x, int y);
     Size sizeWithText(const wchar_t *pszText, int nLen);
@@ -89,7 +95,7 @@ private:
     void deleteBitmap();
     bool useBitmap();
     HDC useFont();
-    void fillTextureData();
+    void fillTextureData(Pass pass);
     ccstd::array<float, 2> convertDrawPoint(Point point, const ccstd::string &text);
 
     // A label owns no GDI object between two draws (a process may hold 10 000; a label used to keep a device context, a bitmap and a font, so about
@@ -114,6 +120,10 @@ private:
     TextBaseline _textBaseLine{TextBaseline::TOP};
     Color4F _fillStyle;
     Color4F _strokeStyle;
+    Color4F _shadowColor{0.0F, 0.0F, 0.0F, 0.0F};
+    float _shadowBlur{0.0F};
+    float _shadowOffsetX{0.0F};
+    float _shadowOffsetY{0.0F};
 
     TEXTMETRIC _tm;
 };

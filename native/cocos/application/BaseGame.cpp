@@ -38,37 +38,36 @@ extern "C" void cc_load_all_plugins(); // NOLINT
 
 #if CC_PLATFORM == CC_PLATFORM_WINDOWS
 namespace {
-// The first window of the Windows exe (the game's 1050 x 665 stage, the Flash client's size) in physical pixels: scaled by the display's DPI (the process is
-// DPI-aware, so SDL takes pixels) and shrunk to fit the work area when the display is small. The engine's own default was 800 x 600, which the game drew at
-// 0.76 of its stage: small, with every label shrunk and washed out.
+// The first window of the Windows exe, in physical pixels (the process is DPI-aware, so SDL takes pixels). The game's stage is 1050 x 665 (the Flash client's
+// size); the macOS app shows it in a window of 1050 x 665 points, which a Retina display draws with 2 x 2 pixels each, so its labels are rasterised at twice the
+// size (stems of two pixels, sharp). The window here is the largest of 2 stages (or the display's DPI scale, when that is more) that the work area holds, and never
+// below half a stage: text drawn at 12 px has stems of one pixel and reads thin and soft, which is what the 800 x 600 default and then a 1 x window showed.
 void defaultWindowSize(int &width, int &height) {
     const float stageWidth = 1050.0F;
     const float stageHeight = 665.0F;
-    float scale = 1.0F;
+    float dpiScale = 1.0F;
     using GetDpiForSystemFn = UINT(WINAPI *)();
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
     auto getDpiForSystem = user32 ? reinterpret_cast<GetDpiForSystemFn>(reinterpret_cast<void *>(GetProcAddress(user32, "GetDpiForSystem"))) : nullptr;
     if (getDpiForSystem) {
-        scale = static_cast<float>(getDpiForSystem()) / 96.0F;
+        dpiScale = static_cast<float>(getDpiForSystem()) / 96.0F;
     }
-    float fit = 1.0F;
+    float scale = dpiScale > 2.0F ? dpiScale : 2.0F;
     RECT work = {0, 0, 0, 0};
     if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
         // room for the title bar, the frame and the 50 px the window starts from
-        const float availableWidth = static_cast<float>(work.right - work.left) - 100.0F * scale;
-        const float availableHeight = static_cast<float>(work.bottom - work.top) - 140.0F * scale;
-        const float fitWidth = availableWidth / (stageWidth * scale);
-        const float fitHeight = availableHeight / (stageHeight * scale);
-        fit = fitWidth < fitHeight ? fitWidth : fitHeight;
-        if (fit > 1.0F) {
-            fit = 1.0F;
-        }
-        if (fit < 0.5F) {
-            fit = 0.5F;
+        const float fitWidth = (static_cast<float>(work.right - work.left) - 100.0F * dpiScale) / stageWidth;
+        const float fitHeight = (static_cast<float>(work.bottom - work.top) - 140.0F * dpiScale) / stageHeight;
+        const float fit = fitWidth < fitHeight ? fitWidth : fitHeight;
+        if (fit < scale) {
+            scale = fit;
         }
     }
-    width = static_cast<int>(stageWidth * scale * fit + 0.5F);
-    height = static_cast<int>(stageHeight * scale * fit + 0.5F);
+    if (scale < 0.5F * dpiScale) {
+        scale = 0.5F * dpiScale;
+    }
+    width = static_cast<int>(stageWidth * scale + 0.5F);
+    height = static_cast<int>(stageHeight * scale + 0.5F);
 }
 } // namespace
 #endif
