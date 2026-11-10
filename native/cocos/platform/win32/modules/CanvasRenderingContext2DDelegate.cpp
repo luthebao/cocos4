@@ -559,10 +559,16 @@ CanvasRenderingContext2DDelegate::Size CanvasRenderingContext2DDelegate::sizeWit
 
         // measure text size
         DrawTextW(dc, pszText, nLen, &rc, dwCalcFmt);
-        // DrawText's calculated width leaves out the extra space between the letters (useFont): the text extent has it
-        SIZE extent = {0, 0};
-        if (GetTextExtentPoint32W(dc, pszText, nLen, &extent)) {
-            rc.right = (std::max)(rc.right, extent.cx);
+        // DrawText's calculated width leaves out the extra space between the letters (useFont): it is added here, one per character. Not
+        // GetTextExtentPoint32W: it has no font fallback, so a letter the font lacks (the styled math letters U+1D400.. of a player name, an emoji) was
+        // measured as two missing-glyph boxes, the text came out far too wide and a centred label was drawn to the left of its place
+        const int extra = GetTextCharacterExtra(dc);
+        if (extra > 0) {
+            int chars = 0;
+            for (int i = 0; i < nLen; ++i) {
+                if (pszText[i] < 0xDC00 || pszText[i] > 0xDFFF) ++chars; // a surrogate pair is one character
+            }
+            rc.right += extra * chars;
         }
 
         // the label's pixels: the font is TEXT_SCALE times its size
