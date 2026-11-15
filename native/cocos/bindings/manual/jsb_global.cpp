@@ -59,7 +59,7 @@ __declspec(dllimport) size_t __stdcall        HeapCompact(void *heap, unsigned l
 #elif CC_PLATFORM == CC_PLATFORM_MACOS || CC_PLATFORM == CC_PLATFORM_IOS
     #include <malloc/malloc.h>
 #elif CC_PLATFORM == CC_PLATFORM_ANDROID
-    #include <malloc.h>
+    #include <dlfcn.h>
 #endif
 
 #if CC_PLATFORM == CC_PLATFORM_ANDROID
@@ -311,10 +311,11 @@ static bool jsb_releaseFreeMemory(se::State &s) { // NOLINT
     malloc_zone_pressure_relief(nullptr, 0);
     s.rval().setBoolean(true);
 #elif CC_PLATFORM == CC_PLATFORM_ANDROID
-    #ifndef M_PURGE
-        #define M_PURGE (-101)
-    #endif
-    s.rval().setBoolean(mallopt(M_PURGE, 0) != 0);
+    // bionic declares mallopt only from API 26 and M_PURGE works from API 28: the app's minimum is 21, so the function is looked up at run time
+    using Mallopt = int (*)(int, int);
+    static const auto mallopt = reinterpret_cast<Mallopt>(dlsym(RTLD_DEFAULT, "mallopt"));
+    constexpr int M_PURGE_OPTION = -101; // <malloc.h> M_PURGE
+    s.rval().setBoolean(mallopt != nullptr && mallopt(M_PURGE_OPTION, 0) != 0);
 #else
     s.rval().setBoolean(false);
 #endif
