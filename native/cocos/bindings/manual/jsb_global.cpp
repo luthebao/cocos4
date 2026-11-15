@@ -38,6 +38,7 @@
 #include "jsb_conversions.h"
 #include "network/Downloader.h"
 #include "network/HttpClient.h"
+#include "platform/CrashReport.h"
 #include "platform/Image.h"
 #include "platform/interfaces/modules/ISystem.h"
 #include "platform/interfaces/modules/ISystemWindow.h"
@@ -322,6 +323,52 @@ static bool jsb_releaseFreeMemory(se::State &s) { // NOLINT
     return true;
 }
 SE_BIND_FUNC(jsb_releaseFreeMemory)
+
+// The native crash reports (platform/CrashReport.h; Windows only for now, false / nothing elsewhere):
+//   jsb.startCrashReport(dsn, release, environment, attachments?: string[]): boolean   once, as early as the game can; true when it runs
+//   jsb.crashReportTag(key, value)        a tag of the next crash report
+//   jsb.crashReportCrumb(message, category?)   a breadcrumb of the next crash report
+static ccstd::string crashArg(const se::State &s, size_t i) {
+    const auto &args = s.args();
+    return i < args.size() && args[i].isString() ? args[i].toString() : ccstd::string();
+}
+
+static bool jsb_startCrashReport(se::State &s) { // NOLINT
+#if CC_PLATFORM == CC_PLATFORM_WINDOWS
+    ccstd::vector<ccstd::string> attachments;
+    const auto &args = s.args();
+    if (args.size() > 3 && args[3].isObject() && args[3].toObject()->isArray()) {
+        se::Object *arr = args[3].toObject();
+        uint32_t n = 0;
+        arr->getArrayLength(&n);
+        for (uint32_t i = 0; i < n; ++i) {
+            se::Value v;
+            if (arr->getArrayElement(i, &v) && v.isString()) attachments.push_back(v.toString());
+        }
+    }
+    s.rval().setBoolean(cc::crashreport::start(crashArg(s, 0), crashArg(s, 1), crashArg(s, 2), attachments));
+#else
+    s.rval().setBoolean(false);
+#endif
+    return true;
+}
+SE_BIND_FUNC(jsb_startCrashReport)
+
+static bool jsb_crashReportTag(se::State &s) { // NOLINT
+#if CC_PLATFORM == CC_PLATFORM_WINDOWS
+    cc::crashreport::setTag(crashArg(s, 0), crashArg(s, 1));
+#endif
+    return true;
+}
+SE_BIND_FUNC(jsb_crashReportTag)
+
+static bool jsb_crashReportCrumb(se::State &s) { // NOLINT
+#if CC_PLATFORM == CC_PLATFORM_WINDOWS
+    cc::crashreport::addBreadcrumb(crashArg(s, 0), crashArg(s, 1));
+#endif
+    return true;
+}
+SE_BIND_FUNC(jsb_crashReportCrumb)
 
 static bool jsc_dumpNativePtrToSeObjectMap(se::State &s) { // NOLINT
     CC_LOG_DEBUG(">>> total: %d, Dump (native -> jsobj) map begin", (int)se::NativePtrToObjectMap::size());
@@ -1611,6 +1658,9 @@ bool jsb_register_global_variables(se::Object *global) { // NOLINT
 
     __jsbObj->defineFunction("garbageCollect", _SE(jsc_garbageCollect));
     __jsbObj->defineFunction("releaseFreeMemory", _SE(jsb_releaseFreeMemory));
+    __jsbObj->defineFunction("startCrashReport", _SE(jsb_startCrashReport));
+    __jsbObj->defineFunction("crashReportTag", _SE(jsb_crashReportTag));
+    __jsbObj->defineFunction("crashReportCrumb", _SE(jsb_crashReportCrumb));
     __jsbObj->defineFunction("dumpNativePtrToSeObjectMap", _SE(jsc_dumpNativePtrToSeObjectMap));
 
     __jsbObj->defineFunction("loadImage", _SE(js_loadImage));

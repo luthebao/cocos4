@@ -156,6 +156,16 @@ declare namespace jsb {
      * @returns true where the platform has such a call.
      */
     export function releaseFreeMemory(): boolean;
+    /**
+     * Starts the native crash reports once (sentry-native with crashpad; Windows only for now): a crash of the native code is written as a minidump and sent to
+     * the Sentry project of `dsn`, with the `attachments` (files read at the moment of the crash).
+     * @returns true when they run (false on the other platforms, without a DSN, or with MC_NO_CRASH_REPORT=1 in the environment).
+     */
+    export function startCrashReport(dsn: string, release: string, environment: string, attachments?: string[]): boolean;
+    /** a tag of the next native crash report */
+    export function crashReportTag(key: string, value: string): void;
+    /** a breadcrumb of the next native crash report */
+    export function crashReportCrumb(message: string, category?: string): void;
     enum AudioFormat {
         UNKNOWN,
         SIGNED_8,

@@ -702,6 +702,8 @@ endif()
 
 if(WINDOWS)
     cocos_source_files(
+        cocos/platform/CrashReport.h
+        cocos/platform/win32/CrashReport-win32.cpp
         cocos/platform/win32/modules/Accelerometer.cpp
         cocos/platform/win32/modules/Accelerometer.h
         cocos/platform/win32/modules/Battery.cpp
@@ -3491,6 +3493,20 @@ if(MSVC)
         ${CWD}/external/win64/libs/*.dll
         ${CWD}/external/win64/libs/msvcr/*.dll
     )
+    # mcgame fork: native crash reports (platform/CrashReport.h, jsb.startCrashReport): sentry-native 0.17.5 with crashpad, prebuilt in vendor/sentry-native/win64
+    # (sentry.dll, crashpad_handler.exe and crashpad_wer.dll are copied next to the exe with the other dlls); and debug info in the Release build (/Z7, /DEBUG:FULL)
+    # so the exe's PDB can name the engine's functions in a minidump (the code is optimised as before: /OPT:REF /OPT:ICF keep the exe's size)
+    option(USE_CRASH_REPORT "Native crash reports (sentry-native, crashpad)" ON)
+    if(USE_CRASH_REPORT)
+        set(SENTRY_NATIVE_DIR ${CWD}/vendor/sentry-native/win64)
+        target_include_directories(${ENGINE_NAME} PRIVATE ${SENTRY_NATIVE_DIR}/include)
+        target_compile_definitions(${ENGINE_NAME} PRIVATE CC_USE_CRASH_REPORT=1)
+        target_link_libraries(${ENGINE_NAME} PUBLIC ${SENTRY_NATIVE_DIR}/lib/sentry.lib)
+        file(GLOB SENTRY_NATIVE_BINS ${SENTRY_NATIVE_DIR}/bin/*)
+        list(APPEND WINDOWS_DLLS ${SENTRY_NATIVE_BINS})
+        target_compile_options(${ENGINE_NAME} PUBLIC $<$<CONFIG:Release>:/Z7>)
+        target_link_options(${ENGINE_NAME} PUBLIC $<$<CONFIG:Release>:/DEBUG:FULL> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
+    endif()
     target_compile_options(${ENGINE_NAME} PUBLIC /MP
         /bigobj
         /wd4018 # signed/unsigned mismatch
