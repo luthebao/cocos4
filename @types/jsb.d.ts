@@ -150,6 +150,12 @@ declare namespace jsb {
     export let onWindowEnter: () => void | undefined;
     export function openURL(url: string): void;
     export function garbageCollect(): void;
+    /**
+     * The memory the native allocator keeps after its blocks were freed goes back to the system (Windows: the heaps are compacted; macOS, iOS: the malloc
+     * zones' pressure relief; Android: mallopt(M_PURGE)). For a game that just let much go (destroyed panels, a collection); it takes milliseconds.
+     * @returns true where the platform has such a call.
+     */
+    export function releaseFreeMemory(): boolean;
     enum AudioFormat {
         UNKNOWN,
         SIGNED_8,

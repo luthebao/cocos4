@@ -41,7 +41,16 @@ cc::IOSPlatform *_platform = nullptr;
     info.height = static_cast<int32_t>(bounds.size.height);
     auto *windowMgr = _platform->getInterface<cc::ISystemWindowManager>();
     windowMgr->createWindow(info);
-    
+
+    // The system's memory warning reaches the game (jsb.onMemoryWarning) whatever the app's own delegate does with it: the template's AppDelegate hands
+    // applicationDidReceiveMemoryWarning to its SDK wrapper only, never to this bridge, so the engine was never told and iOS closed the app without a word.
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidReceiveMemoryWarningNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification * /*note*/) {
+                                                      cc::events::LowMemory::broadcast();
+                                                  }];
+
     _platform->loop();
 }
 
@@ -61,7 +70,7 @@ cc::IOSPlatform *_platform = nullptr;
 
 
 - (void)applicationDidReceiveMemoryWarning:(UIApplication *)application {
-    cc::events::LowMemory::broadcast();
+    // the notification observer of didFinishLaunching already tells the engine: an app delegate that also calls this must not tell it twice
 }
 
 - (float)getPixelRatio {

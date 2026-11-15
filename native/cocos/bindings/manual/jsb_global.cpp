@@ -48,6 +48,20 @@
 #include <regex>
 #include <sstream>
 
+#if CC_PLATFORM == CC_PLATFORM_WINDOWS
+    #include <malloc.h>
+// GetProcessHeaps / HeapCompact as <heapapi.h> declares them, without <windows.h> and its macros in this file (the same types: a second declaration if it is
+// already included)
+extern "C" {
+__declspec(dllimport) unsigned long __stdcall GetProcessHeaps(unsigned long numberOfHeaps, void **processHeaps);
+__declspec(dllimport) size_t __stdcall        HeapCompact(void *heap, unsigned long flags);
+}
+#elif CC_PLATFORM == CC_PLATFORM_MACOS || CC_PLATFORM == CC_PLATFORM_IOS
+    #include <malloc/malloc.h>
+#elif CC_PLATFORM == CC_PLATFORM_ANDROID
+    #include <malloc.h>
+#endif
+
 #if CC_PLATFORM == CC_PLATFORM_ANDROID
     #include "platform/java/jni/JniImp.h"
 #endif
@@ -276,6 +290,37 @@ static bool jsc_garbageCollect(se::State &s) { // NOLINT
     return true;
 }
 SE_BIND_FUNC(jsc_garbageCollect)
+
+// jsb.releaseFreeMemory(): the memory the native allocator keeps after its blocks were freed goes back to the system. A game that destroys thousands of
+// nodes (a closed panel) gives their memory to the heap, and the heap keeps it for what is made next: the process stays as large as its peak. Called by the
+// game after it let much go, never per frame: the walk of the heaps takes milliseconds.
+//   Windows: _heapmin (the CRT heap) and HeapCompact on every heap of the process: free blocks are joined and whole free pages decommitted.
+//   macOS, iOS: malloc_zone_pressure_relief on every zone (what the system asks of an app under memory pressure).
+//   Android: mallopt(M_PURGE) (bionic, API 28 and later: jemalloc / scudo return their free pages); a no-op on older systems.
+// Returns true where the platform has such a call.
+static bool jsb_releaseFreeMemory(se::State &s) { // NOLINT
+#if CC_PLATFORM == CC_PLATFORM_WINDOWS
+    _heapmin();
+    void *heaps[128];
+    const unsigned long count = GetProcessHeaps(128, heaps);
+    for (unsigned long i = 0; i < count && i < 128; ++i) {
+        HeapCompact(heaps[i], 0);
+    }
+    s.rval().setBoolean(true);
+#elif CC_PLATFORM == CC_PLATFORM_MACOS || CC_PLATFORM == CC_PLATFORM_IOS
+    malloc_zone_pressure_relief(nullptr, 0);
+    s.rval().setBoolean(true);
+#elif CC_PLATFORM == CC_PLATFORM_ANDROID
+    #ifndef M_PURGE
+        #define M_PURGE (-101)
+    #endif
+    s.rval().setBoolean(mallopt(M_PURGE, 0) != 0);
+#else
+    s.rval().setBoolean(false);
+#endif
+    return true;
+}
+SE_BIND_FUNC(jsb_releaseFreeMemory)
 
 static bool jsc_dumpNativePtrToSeObjectMap(se::State &s) { // NOLINT
     CC_LOG_DEBUG(">>> total: %d, Dump (native -> jsobj) map begin", (int)se::NativePtrToObjectMap::size());
@@ -1564,6 +1609,7 @@ bool jsb_register_global_variables(se::Object *global) { // NOLINT
     getOrCreatePlainObject_r("jsb", global, &__jsbObj);
 
     __jsbObj->defineFunction("garbageCollect", _SE(jsc_garbageCollect));
+    __jsbObj->defineFunction("releaseFreeMemory", _SE(jsb_releaseFreeMemory));
     __jsbObj->defineFunction("dumpNativePtrToSeObjectMap", _SE(jsc_dumpNativePtrToSeObjectMap));
 
     __jsbObj->defineFunction("loadImage", _SE(js_loadImage));
