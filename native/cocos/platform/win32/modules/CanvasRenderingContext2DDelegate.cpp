@@ -306,17 +306,29 @@ void CanvasRenderingContext2DDelegate::fillRect(float x, float y, float w, float
     //not filled all Bits in buffer? the buffer length is _bufferWidth * _bufferHeight * 4, but it filled _bufferWidth * _bufferHeight * 3?
     uint8_t *buffer = _imageData.getBytes();
     if (buffer) {
+        // the rect is clipped to the buffer, as a canvas clips it: the label's underline (text-processing.ts) is drawn below the last line and as wide as the
+        // line, so a wrapped or cut label asked for rows and columns past the buffer, and fillRectWithColor (its asserts are gone in a release build) wrote them
+        // into the heap after it (Windows: STATUS_HEAP_CORRUPTION and Pass / regex crashes after a panel of underlined links, Sentry MCGAME-CLIENT-4K / 4W / 9)
+        const float right = (std::min)(x + w, std::floor(_bufferWidth));
+        const float bottom = (std::min)(y + h, std::floor(_bufferHeight));
+        const float left = (std::max)(x, 0.0F);
+        const float top = (std::max)(y, 0.0F);
+        if (!(right > left) || !(bottom > top)) {
+            return;
+        }
         uint8_t r = static_cast<uint8_t>(_fillStyle[0] * 255.0f);
         uint8_t g = static_cast<uint8_t>(_fillStyle[1] * 255.0f);
         uint8_t b = static_cast<uint8_t>(_fillStyle[2] * 255.0f);
         uint8_t a = static_cast<uint8_t>(_fillStyle[3] * 255.0f);
+        const auto x0 = static_cast<uint32_t>(left);
+        const auto y0 = static_cast<uint32_t>(top);
         fillRectWithColor(buffer,
                           static_cast<uint32_t>(_bufferWidth),
                           static_cast<uint32_t>(_bufferHeight),
-                          static_cast<uint32_t>(x),
-                          static_cast<uint32_t>(y),
-                          static_cast<uint32_t>(w),
-                          static_cast<uint32_t>(h), r, g, b, a);
+                          x0,
+                          y0,
+                          static_cast<uint32_t>(right) - x0,
+                          static_cast<uint32_t>(bottom) - y0, r, g, b, a);
     }
 }
 
