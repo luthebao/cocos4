@@ -76,6 +76,10 @@ bool gles3wClose() {
     if (libegl) {
         ret &= FreeLibrary(libegl) ? true : false;
         libegl = NULL;
+        // the EGL entry point loaded from that library: Engine::doRestart (__restartVM) closes and opens the library again, and a non-null
+        // eglGetProcAddress left from before is called by gles3wLoad first, into the unloaded library (Windows: EXCEPTION_ACCESS_VIOLATION_EXEC
+        // in gles3wLoad at the restart of an OTA update, Sentry MCGAME-CLIENT-1S / 24)
+        eglGetProcAddress = nullptr;
     }
 
     if (libgles) {
@@ -122,6 +126,10 @@ bool gles3wClose() {
     if (libegl) {
         ret &= dlclose(libegl) == 0;
         libegl = nullptr;
+        // the EGL entry point loaded from that library: Engine::doRestart (__restartVM) closes and opens the library again, and a non-null
+        // eglGetProcAddress left from before is called by gles3wLoad first, into the unloaded library (Windows: EXCEPTION_ACCESS_VIOLATION_EXEC
+        // in gles3wLoad at the restart of an OTA update, Sentry MCGAME-CLIENT-1S / 24)
+        eglGetProcAddress = nullptr;
     }
 
     if (libgles) {
